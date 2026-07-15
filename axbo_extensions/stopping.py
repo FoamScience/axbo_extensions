@@ -423,6 +423,29 @@ class ProbabilisticGlobalStoppingStrategy(BaseGlobalStoppingStrategy):
         """Whether the PI verdict is the one Ax acts on."""
         return self.delegate is None and not self.observe_only
 
+    def state_dict(self) -> dict[str, Any]:
+        """JSON-serializable history, for drivers that rebuild the strategy every ask.
+
+        Ax's Orchestrator holds one strategy object for a whole study, so in-memory history
+        suffices there. A detached driver runs one ask per process and reconstructs the
+        strategy each time; without rehydration ``pi_history`` would reset on every
+        invocation and the decay fit would never see more than a single point.
+        """
+        return {
+            "pi_history": {k: list(v) for k, v in self.pi_history.items()},
+            "verdicts": list(self.verdicts),
+            "verdict_trial": self._verdict_trial,
+        }
+
+    def load_state_dict(self, state: Optional[dict[str, Any]]) -> None:
+        """Restore history produced by :meth:`state_dict`. Empty/None state is a no-op."""
+        if not state:
+            return
+        self.pi_history = {k: list(v) for k, v in (state.get("pi_history") or {}).items()}
+        self.verdicts = list(state.get("verdicts") or [])
+        self._verdict_trial = state.get("verdict_trial")
+        self.last_verdict = self.verdicts[-1] if self.verdicts else None
+
     def _at_target_fidelity(self, experiment: Experiment, trial_index: int) -> bool:
         """Whether every arm of a trial sits at the fidelity parameter's target value."""
         fid_name = next(
