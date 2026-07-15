@@ -312,6 +312,60 @@ class TestCollect:
         assert len(gss.verdicts) == 1, "observe-only must yield the same data a live run does"
 
 
+class TestStatePersistence:
+    """Detached drivers (upo) rebuild the strategy each ask -- history must survive."""
+
+    def test_round_trip(self):
+        import json
+
+        from axbo_extensions.stopping import ProbabilisticGlobalStoppingStrategy
+
+        a = ProbabilisticGlobalStoppingStrategy(min_trials=1, gs_provider=lambda: None)
+        a.pi_history = {"obj": [0.5, 0.3, 0.1]}
+        a.verdicts = [{"trial": 2, "max_pi": {"obj": 0.1}, "p_horizon": {},
+                       "pi_would_stop": False, "reason": "x"}]
+        a._verdict_trial = 2
+
+        # Must survive a JSON round trip: upo persists this inside strategy_state.
+        state = json.loads(json.dumps(a.state_dict()))
+
+        b = ProbabilisticGlobalStoppingStrategy(min_trials=1, gs_provider=lambda: None)
+        b.load_state_dict(state)
+
+        assert b.pi_history == {"obj": [0.5, 0.3, 0.1]}
+        assert b.verdicts == a.verdicts
+        assert b._verdict_trial == 2
+        assert b.last_verdict == a.verdicts[-1]
+
+    def test_load_empty_state_is_noop(self):
+        from axbo_extensions.stopping import ProbabilisticGlobalStoppingStrategy
+
+        gss = ProbabilisticGlobalStoppingStrategy(min_trials=1, gs_provider=lambda: None)
+        gss.load_state_dict(None)
+        gss.load_state_dict({})
+        assert gss.pi_history == {}
+        assert gss.verdicts == []
+
+    def test_rehydrated_history_accumulates_across_processes(self):
+        """The point of persistence: ask N+1 extends ask N's history rather than restarting."""
+        from ax.core.trial_status import TrialStatus
+        from axbo_extensions.stopping import ProbabilisticGlobalStoppingStrategy
+
+        exp, gs = TestCollect()._experiment_and_gs()
+
+        first = ProbabilisticGlobalStoppingStrategy(min_trials=1, gs_provider=lambda: gs)
+        first.collect(exp)
+        state = first.state_dict()
+
+        # A fresh process: new strategy object, same persisted state.
+        second = ProbabilisticGlobalStoppingStrategy(min_trials=1, gs_provider=lambda: gs)
+        second.load_state_dict(state)
+        exp.trial_indices_by_status = {TrialStatus.COMPLETED: {0, 1, 2, 3}}
+        second.collect(exp)
+
+        assert len(second.pi_history["obj"]) == 2
+
+
 class TestStrategy:
     def test_rejects_bad_args(self):
         from axbo_extensions.stopping import ProbabilisticGlobalStoppingStrategy
